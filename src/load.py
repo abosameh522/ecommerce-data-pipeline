@@ -13,6 +13,7 @@ def connect():
         "port": os.getenv("DB_PORT", "5432"),
         "dbname": os.getenv("DB_NAME", "ecommerce_warehouse"),
         "user": os.getenv("DB_USER", os.getenv("USER", "postgres")),
+        "connect_timeout": 10,
     }
     if os.getenv("DB_PASSWORD"):
         options["password"] = os.environ["DB_PASSWORD"]

@@ -1,5 +1,12 @@
 import pandas as pd
 
+from validate import require_unique
+
+
+def valid_number(series, upper_bound):
+    # Exclusive bounds match PostgreSQL INTEGER and NUMERIC column capacity.
+    return series.ge(0) & series.lt(upper_bound)
+
 
 def valid_id(series):
     return series.fillna("").str.fullmatch(r"[0-9a-f]{32}")
@@ -28,10 +35,16 @@ def transform(raw):
     )
     report["customers"]["rejected"] = int((~good).sum())
     customers = customers.loc[good, ["customer_id", "customer_unique_id", "customer_city", "customer_state"]].copy()
-    customers["customer_city"] = customers["customer_city"].fillna("Unknown")
+    customers["customer_city"] = customers["customer_city"].replace("", "Unknown").fillna("Unknown")
     customers = customers.rename(columns={"customer_city": "city", "customer_state": "state"})
 
-    categories = tables["categories"].dropna(subset=["product_category_name"])
+    categories = tables["categories"].copy()
+    for column in ["product_category_name", "product_category_name_english"]:
+        categories[column] = categories[column].str.strip().replace("", pd.NA)
+    good = categories[["product_category_name", "product_category_name_english"]].notna().all(axis=1)
+    report["categories"]["rejected"] = int((~good).sum())
+    categories = categories.loc[good].copy()
+    require_unique(categories, ["product_category_name"], "categories")
     category_names = categories.set_index("product_category_name")["product_category_name_english"]
     products = tables["products"]
     good = valid_id(products["product_id"])
@@ -46,7 +59,12 @@ def transform(raw):
     report["orders"]["excluded"] = int((~delivered).sum())
     orders = orders.loc[delivered, ["order_id", "customer_id", "order_purchase_timestamp"]].copy()
     orders["purchase_date"] = pd.to_datetime(orders["order_purchase_timestamp"], errors="coerce")
-    good = valid_id(orders["order_id"]) & valid_id(orders["customer_id"]) & orders["purchase_date"].notna()
+    good = (
+        valid_id(orders["order_id"])
+        & valid_id(orders["customer_id"])
+        & orders["purchase_date"].notna()
+        & orders["purchase_date"].dt.year.between(1, 9999)
+    )
     report["orders"]["rejected"] = int((~good).sum())
     orders = orders.loc[good, ["order_id", "customer_id", "purchase_date"]].copy()
     good = orders["customer_id"].isin(customers["customer_id"])
@@ -60,15 +78,19 @@ def transform(raw):
     good = (
         valid_id(items["order_id"])
         & valid_id(items["product_id"])
-        & items["order_item_id"].notna()
+        & valid_number(items["order_item_id"], 2**31)
         & items["order_item_id"].gt(0)
         & items["order_item_id"].mod(1).eq(0)
-        & items["price"].notna()
         & items["price"].ge(0)
+        & valid_number(items["price"].round(2), 10**10)
     )
     report["items"]["rejected"] = int((~good).sum())
     items = items.loc[good, ["order_id", "order_item_id", "product_id", "price"]].copy()
-    good = items["product_id"].isin(products["product_id"]) & items["order_id"].isin(tables["orders"]["order_id"])
+    # Only non-delivered source orders are business-rule exclusions. Children
+    # of invalid delivered orders are rejected, like other broken references.
+    excluded_orders = tables["orders"].loc[~delivered, "order_id"]
+    known_orders = pd.concat([orders["order_id"], excluded_orders])
+    good = items["product_id"].isin(products["product_id"]) & items["order_id"].isin(known_orders)
     report["items"]["rejected"] += int((~good).sum())
     items = items.loc[good].copy()
     good = items["order_id"].isin(orders["order_id"])
@@ -85,16 +107,16 @@ def transform(raw):
     payments["payment_type"] = payments["payment_type"].str.strip().str.lower()
     good = (
         valid_id(payments["order_id"])
-        & payments["payment_sequential"].notna()
+        & valid_number(payments["payment_sequential"], 2**31)
         & payments["payment_sequential"].gt(0)
         & payments["payment_sequential"].mod(1).eq(0)
-        & payments["payment_value"].notna()
         & payments["payment_value"].ge(0)
+        & valid_number(payments["payment_value"].round(2), 10**12)
         & payments["payment_type"].fillna("").ne("")
     )
     report["payments"]["rejected"] = int((~good).sum())
     payments = payments.loc[good, ["order_id", "payment_sequential", "payment_type", "payment_value"]].copy()
-    good = payments["order_id"].isin(tables["orders"]["order_id"])
+    good = payments["order_id"].isin(known_orders)
     report["payments"]["rejected"] += int((~good).sum())
     payments = payments.loc[good].copy()
     good = payments["order_id"].isin(orders["order_id"])
@@ -118,4 +140,6 @@ def transform(raw):
         "payments": payments,
         "dates": dates,
     }
+    for name, counts in report.items():
+        counts["cleaned"] = len(categories) if name == "categories" else len(clean[name])
     return clean, report

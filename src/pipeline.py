@@ -24,16 +24,15 @@ def main():
     try:
         raw = extract(PROJECT_DIR / "data/raw")
         clean, report = transform(raw)
+        for name, counts in report.items():
+            logging.info(
+                "%s: input=%s duplicates=%s rejected=%s excluded=%s cleaned=%s",
+                name, counts["input"], counts["duplicates"], counts["rejected"], counts["excluded"], counts["cleaned"],
+            )
         logging.info("Validation started")
         validate(clean)
         logging.info("Validation passed")
         inserted = load(clean)
-        for name, counts in report.items():
-            cleaned = len(clean[name]) if name in clean else counts["input"] - counts["duplicates"]
-            logging.info(
-                "%s: input=%s duplicates=%s rejected=%s excluded=%s cleaned=%s",
-                name, counts["input"], counts["duplicates"], counts["rejected"], counts["excluded"], cleaned,
-            )
         for table, count in inserted.items():
             source = {"dim_customers": "customers", "dim_products": "products", "dim_date": "dates", "fact_orders": "items", "fact_payments": "payments"}[table]
             logging.info("%s: inserted=%s skipped_existing=%s", table, count, len(clean[source]) - count)
