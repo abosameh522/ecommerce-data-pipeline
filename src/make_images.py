@@ -48,6 +48,8 @@ with connect() as connection:
     with connection.cursor() as cursor:
         cursor.execute("SELECT SUM(total_amount), COUNT(DISTINCT order_id), COUNT(*) FROM fact_orders")
         revenue, order_count, item_count = cursor.fetchone()
+        if not order_count:
+            raise ValueError("No order items to plot. Load delivered orders before generating images.")
         cursor.execute("SELECT COUNT(*) FROM fact_payments")
         payment_count = cursor.fetchone()[0]
         cursor.execute("SELECT category, item_revenue FROM (SELECT p.category, SUM(f.total_amount) AS item_revenue FROM fact_orders f JOIN dim_products p ON p.product_key = f.product_key GROUP BY p.category) x ORDER BY item_revenue DESC LIMIT 5")
@@ -106,9 +108,9 @@ figure = plt.figure(figsize=(16, 9), dpi=120, facecolor="#f8fafc")
 figure.text(0.05, 0.92, "SQL analytics", fontsize=28, weight="bold", color=NAVY)
 figure.text(0.05, 0.865, "Delivered orders • item revenue excludes freight", fontsize=14, color=TEXT)
 metrics = [
-    ("Item revenue", f"{revenue:,.2f}"),
+    ("Item revenue (BRL)", f"{revenue:,.2f}"),
     ("Orders", f"{order_count:,}"),
-    ("Average order value", f"{revenue / order_count:,.2f}"),
+    ("Average order value (BRL)", f"{revenue / order_count:,.2f}"),
     ("Items sold", f"{item_count:,}"),
 ]
 for index, (label, value) in enumerate(metrics):
@@ -121,13 +123,13 @@ labels = [row[0].replace("_", " ") for row in categories][::-1]
 values = [float(row[1]) / 1_000_000 for row in categories][::-1]
 left.barh(labels, values, color=BLUE)
 left.set_title("Top categories by item revenue", color=NAVY, loc="left", fontsize=15)
-left.set_xlabel("Millions", color=TEXT)
+left.set_xlabel("BRL millions", color=TEXT)
 left.spines[["top", "right"]].set_visible(False)
 
 right = figure.add_axes((0.57, 0.13, 0.38, 0.42), facecolor="#f8fafc")
 right.plot([row[0] for row in monthly], [float(row[1]) / 1_000_000 for row in monthly], color=BLUE, linewidth=2.5)
 right.set_title("Monthly item revenue", color=NAVY, loc="left", fontsize=15)
-right.set_ylabel("Millions", color=TEXT)
+right.set_ylabel("BRL millions", color=TEXT)
 right.tick_params(axis="x", rotation=35)
 right.spines[["top", "right"]].set_visible(False)
 save(figure, ROOT / "portfolio/sql_analytics.png")

@@ -36,8 +36,6 @@ WHERE orders > 1
 ORDER BY orders DESC, item_revenue DESC
 LIMIT 10;
 
-SELECT month, orders FROM monthly_sales_summary ORDER BY month;
-
 SELECT payment_type, COUNT(*) AS payments, SUM(payment_amount) AS payment_total
 FROM fact_payments
 GROUP BY payment_type
