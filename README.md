@@ -1,36 +1,75 @@
 # E-Commerce Data Pipeline & Warehouse
 
-A Python ETL pipeline that cleans Olist e-commerce CSV files and loads a PostgreSQL warehouse for sales analysis. It keeps order items and payments in separate fact tables so multi-item orders do not inflate payment totals.
+A Python and PostgreSQL ETL pipeline that cleans and validates six Olist e-commerce CSV files and loads a small star-schema warehouse for SQL analysis.
 
-The full-data run loaded **110,197 order items** and **100,756 payment records** for delivered orders. SQL queries calculate item revenue, average order value, monthly sales, category sales, and repeat customers.
+The full-data run loaded **110,197 order items** and **100,756 payment records** for delivered orders, and the analytical views report **BRL 13,221,498.11** in item revenue.
 
-## Data flow
+## Overview
+
+The Olist export is a set of related CSV files rather than one clean table. Orders, order items, and payments arrive at different grains, with invalid identifiers, blank category names, and non-delivered orders mixed in.
+
+This project turns those files into a queryable warehouse:
+
+- Reads the six needed CSVs and checks their columns.
+- Cleans and normalizes text, dates, and numeric fields.
+- Validates keys, references, and monetary ranges before loading.
+- Loads dimensions and facts into PostgreSQL in one transaction.
+- Exposes three views and nine analytical queries for sales reporting.
+
+The warehouse keeps order items and payments in separate fact tables, so a multi-item order does not multiply its payment totals. It is a batch pipeline with an insert-only load, not a scheduled or streaming system.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Olist CSV files] --> B[Extract]
+    B --> C[Transform]
+    C --> D[Validate]
+    D --> E[Load: PostgreSQL transaction]
+    E --> F[(Star schema)]
+    F --> G[SQL views and analytics]
+```
 
 ![Pipeline architecture](images/architecture.png)
 
-1. **Extract:** check that the six source files and required columns exist, then read identifiers as strings.
-2. **Transform:** remove exact duplicates, normalize text, parse dates and numbers, translate categories, and retain delivered orders.
-3. **Validate:** check business-key uniqueness, parent references, integer ranges, finite amounts, and item-total consistency.
-4. **Load:** insert dimensions and facts in one PostgreSQL transaction, then create the analytical views. A failed load rolls back the transaction.
+## Pipeline Flow
 
-The implementation uses Python, pandas, psycopg, and PostgreSQL. Matplotlib generates the diagrams and sales chart; it is not part of the ETL path.
+| Stage | What it does | Where |
+| --- | --- | --- |
+| Extract | Confirms the six files and required columns exist, then reads identifiers as strings | `src/extract.py` |
+| Transform | Removes exact duplicates, normalizes text, parses dates and numbers, translates categories, keeps delivered orders | `src/transform.py` |
+| Validate | Checks key uniqueness, parent references, integer ranges, finite amounts, and item-total consistency | `src/validate.py` |
+| Load | Inserts dimensions and facts in one transaction, then creates views | `src/load.py` |
+| Analyze | Monthly, customer, product, and payment queries | `sql/` |
 
-## Source data
+`src/pipeline.py` wires the stages together and writes run logs to `logs/pipeline.log`.
 
-[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). It contains anonymized orders from 2016–2018. Raw data are downloaded separately and ignored by Git.
+## Tech Stack
 
-| CSV | Source rows | Fields used |
-| --- | ---: | --- |
-| `olist_customers_dataset.csv` | 99,441 | Customer ID, unique customer ID, city, state |
-| `olist_products_dataset.csv` | 32,951 | Product ID, category name |
-| `olist_orders_dataset.csv` | 99,441 | Order ID, customer ID, status, purchase timestamp |
-| `olist_order_items_dataset.csv` | 112,650 | Order ID, item sequence, product ID, price |
-| `olist_order_payments_dataset.csv` | 103,886 | Order ID, payment sequence, type, value |
-| `product_category_name_translation.csv` | 71 | Portuguese and English category names |
+| Layer | Tools |
+| --- | --- |
+| Language | Python 3 |
+| Data handling | pandas |
+| Database | PostgreSQL |
+| Driver | psycopg 3 |
+| Querying | SQL (views, joins, aggregates, CTE) |
+| Visuals | Matplotlib |
+| Tests | Python `unittest` |
 
-Only these six files are used. Reviews, sellers, and geolocation are outside the scope of this warehouse. The counts above were checked against the downloaded source; [run results](docs/run_results.md) record the verification details.
+Matplotlib is used only to generate the diagrams and the sales chart. It is not part of the ETL path.
 
-## Warehouse model
+## Data Model
+
+The warehouse is a small star schema. `fact_orders` joins to all three dimensions; `fact_payments` joins to customer and date.
+
+```mermaid
+erDiagram
+    dim_customers ||--o{ fact_orders : places
+    dim_products  ||--o{ fact_orders : contains
+    dim_date      ||--o{ fact_orders : dated
+    dim_customers ||--o{ fact_payments : pays
+    dim_date      ||--o{ fact_payments : dated
+```
 
 | Table | Grain | Key |
 | --- | --- | --- |
@@ -42,25 +81,112 @@ Only these six files are used. Reviews, sellers, and geolocation are outside the
 
 ![Warehouse model](portfolio/data_model.png)
 
-`fact_orders` references all three dimensions. `fact_payments` references customer and date. The customer dimension retains `customer_unique_id` to identify repeat customers across different source customer IDs.
+`dim_customers` keeps `customer_unique_id` so repeat customers can be counted across different source customer IDs. An item row represents one unit, so `quantity = 1` and its amount equals its price. Revenue is the sum of item amounts in BRL, excluding freight; payment amounts are a separate measure.
 
-An item row represents one unit, so `quantity = 1` and its amount equals its price. Revenue is the sum of item amounts in **BRL**, excluding freight. Payments are a separate measure and can include freight. Do not join the two facts directly on `order_id` to sum money: aggregate each to order grain first.
+## Project Structure
 
-## Cleaning and load behavior
+```text
+ecommerce-data-pipeline/
+├── src/
+│   ├── extract.py            # CSV loading and required-column checks
+│   ├── transform.py          # Cleaning rules and per-source row counts
+│   ├── validate.py           # Key, reference, and numeric checks
+│   ├── load.py               # Transactional dimension and fact inserts
+│   ├── pipeline.py           # Entry point and logging
+│   └── make_images.py        # Database-backed charts and diagrams
+├── sql/
+│   ├── create_tables.sql     # Five tables, constraints, indexes
+│   ├── views.sql             # Three analytical views
+│   └── analytics_queries.sql # Nine analysis queries
+├── tests/
+│   ├── sample_data.py        # Synthetic source rows
+│   ├── test_pipeline.py      # 16 extraction/transform/validation tests
+│   └── test_load.py          # 4 PostgreSQL integration tests
+├── docs/
+│   └── run_results.md        # Verified full-data results
+├── data/raw/                 # Downloaded CSVs (ignored by Git)
+├── images/                   # Architecture diagram
+├── portfolio/                # Project visuals
+├── logs/                     # Run logs (ignored by Git)
+├── requirements.txt
+└── README.md
+```
 
-- Non-delivered orders and their otherwise valid items/payments are **excluded** by the business rule.
-- Invalid IDs, dates, numeric values, and missing parent references are **rejected**. Children of a rejected delivered order are also rejected.
-- Missing or blank cities and missing category translations become `Unknown`. Incomplete translation rows are rejected; conflicting translation keys stop the run.
-- Exact source-row duplicates are removed. Remaining duplicate business keys stop validation rather than silently choosing one value.
-- Each source report reconciles as `input = duplicates + rejected + excluded + cleaned`. Counts are logged before database loading, so they remain available if the connection or load fails.
+## Data Quality Checks
 
-Repeated runs use `ON CONFLICT DO NOTHING`: existing keys are skipped and new keys are inserted. This is **insert-only loading**, not change detection. Every run rereads the CSVs; changed prices, corrected customer details, deleted records, or changed order statuses do not update existing warehouse rows. Run one loader at a time; inserted counts are based on before/after table counts.
+Cleaning and validation run before any row reaches the database.
 
-## Run locally
+| Check | Behavior |
+| --- | --- |
+| Source files and columns | Missing files or columns stop the run with the file and column names |
+| Exact duplicates | Removed before validation |
+| Duplicate business keys | Stop validation instead of silently keeping one row |
+| Invalid identifiers | IDs must be 32-character hex values |
+| Dates | Invalid or out-of-range purchase dates are rejected |
+| Numeric ranges | Positive integers must fit PostgreSQL `INTEGER`; amounts must be finite, non-negative, and fit the numeric columns |
+| Item totals | `total_amount` must equal `quantity * unit_price` |
+| References | Facts must reference existing dimensions |
+| Delivered-order rule | Non-delivered orders and their items/payments are excluded, not rejected |
+| Reconciled counts | Every source reports `input = duplicates + rejected + excluded + cleaned` |
 
-You need Python and a running PostgreSQL server, including the `createdb` and `psql` clients. The complete workflow was tested on Linux with Python 3.14.7 and PostgreSQL 18.6. Use a dedicated database and a login role allowed to create tables and views.
+Counts are logged right after transformation, so they remain available even if the database load fails.
 
-### 1. Install dependencies
+## SQL Analysis
+
+`sql/analytics_queries.sql` answers questions such as:
+
+- How much item revenue did delivered orders generate?
+- What is the average item value per order?
+- How did monthly sales change over the period?
+- Which products and categories sell the most?
+- Which customers place the most orders and repeat?
+- How are payments split across types?
+
+Three reusable views back these queries: `monthly_sales_summary`, `customer_order_summary`, and `product_sales_summary`. Customer rankings use `customer_unique_id` rather than treating each order-specific customer ID as a different person.
+
+## Testing
+
+Tests use synthetic source rows, so the Kaggle download is not required:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+This runs **16 extraction, transform, and validation tests**. Four PostgreSQL integration tests are skipped unless `TEST_DATABASE_URL` is set:
+
+```bash
+createdb ecommerce_pipeline_test
+TEST_DATABASE_URL='dbname=ecommerce_pipeline_test' \
+  python -m unittest discover -s tests -v
+```
+
+Result: **20 tests passed**. The integration tests create an isolated schema per test and remove it afterward. They cover first and repeated loads, new-key inserts, unchanged existing values, empty facts, the SQL views and queries, and transaction rollback after a constraint failure.
+
+## Results
+
+Verified on the full Olist archive with Python 3.14.7 and PostgreSQL 18.6. Details are in [docs/run_results.md](docs/run_results.md).
+
+| Metric | Value |
+| --- | ---: |
+| Source rows read | 99,441 customers, 112,650 items, 103,886 payments |
+| Delivered orders with loaded items | 96,478 |
+| Order items loaded | 110,197 |
+| Payment records loaded | 100,756 |
+| Item revenue, excluding freight | BRL 13,221,498.11 |
+| Average item value per order | BRL 137.04 |
+| Highest-revenue category | `health_beauty`, BRL 1,233,131.72 |
+
+A second run inserted **zero** rows in every table, confirming that repeated loads skip existing keys.
+
+![Sales analysis from PostgreSQL](portfolio/sql_analytics.png)
+
+The monthly chart reflects this historical sample, not the full market; months with no delivered orders are not filled in, and partial months should not be read as complete trading periods.
+
+## How to Run
+
+You need Python and a running PostgreSQL server, including the `createdb` and `psql` clients. Use a dedicated database and a role allowed to create tables and views.
+
+**1. Install dependencies**
 
 ```bash
 git clone https://github.com/abosameh522/ecommerce-data-pipeline.git
@@ -70,9 +196,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-### 2. Download the CSVs
-
-Download the dataset from its Kaggle page, or use the public archive endpoint:
+**2. Download the CSVs**
 
 ```bash
 curl --fail --location --retry 2 \
@@ -81,18 +205,16 @@ curl --fail --location --retry 2 \
 unzip -j olist.zip -d data/raw
 ```
 
-The archive also includes three unused CSVs. They can remain in `data/raw/`; extraction only reads the six files listed above. If the endpoint requires a login or returns a non-ZIP response, download through Kaggle and extract the CSVs manually.
+The archive also contains three unused CSVs; they can stay in `data/raw/`. If the endpoint asks for a login, download from Kaggle manually.
 
-### 3. Configure the database
+**3. Configure the database**
 
-The pipeline reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and optional `DB_PASSWORD` from the environment. It does **not** load `.env` automatically.
+The pipeline reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and optional `DB_PASSWORD`. It does **not** load `.env` automatically.
 
 ```bash
 cp .env.example .env
-# Edit .env with your PostgreSQL connection settings before continuing.
-set -a
-source .env
-set +a
+# Edit .env with your PostgreSQL settings, then:
+set -a; source .env; set +a
 
 # PostgreSQL CLI tools use PG* variables, not the pipeline's DB* variables.
 export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$DB_USER"
@@ -100,83 +222,37 @@ export PGPASSWORD="${DB_PASSWORD:-}"
 createdb "$DB_NAME"
 ```
 
-`createdb` is a one-time step. If the database already exists, skip it. If your role cannot create databases, ask the local database administrator to create one owned by your role. Leave `DB_PASSWORD` empty only when your configured authentication allows it. `.env` is ignored by Git; quote values that contain shell-special characters.
-
-### 4. Execute the pipeline and SQL
+**4. Run the pipeline and the SQL**
 
 ```bash
 python src/pipeline.py
 psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" -f sql/analytics_queries.sql
-python src/pipeline.py
+python src/pipeline.py        # second run: expect zero inserts
+python src/make_images.py     # regenerate the visuals (needs loaded data)
 ```
 
-Tables and views are created automatically. The second run should log zero inserted rows for all five tables. Logs go to `logs/pipeline.log`. Python resolves data and SQL paths relative to the project, so it can also be invoked by absolute script path from another directory.
+Tables and views are created automatically. Logs go to `logs/pipeline.log`.
 
-Generate the existing project visuals after loading:
+## Lessons Learned
 
-```bash
-python src/make_images.py
-```
+- Item and payment facts need different grains. Keeping them separate is what keeps payment totals accurate.
+- Business keys plus unique constraints make repeat loads safe, but they only skip duplicates; they do not update changed rows.
+- Separating *rejected* data-quality failures from *excluded* order statuses makes the quality counts easier to trust.
+- Validating ranges before loading catches values that would otherwise fail late inside PostgreSQL.
 
-This overwrites the four PNGs in `images/` and `portfolio/` using the connected database. It requires at least one loaded order item.
+## Future Improvements
 
-## Results and SQL analysis
+These are not implemented yet:
 
-| Measure | Full-data result |
-| --- | ---: |
-| Delivered orders with loaded items | 96,478 |
-| Order items | 110,197 |
-| Payment records | 100,756 |
-| Item revenue, excluding freight | BRL 13,221,498.11 |
-| Average item value per order, excluding freight | BRL 137.04 |
+- A defined update policy for corrected source records (upsert instead of insert-only).
+- A rejected-row report with reasons for each rejected record.
+- Source-to-warehouse reconciliation for delivered orders missing items or payments.
+- A continuous date calendar so monthly trends cover empty months.
+- Optional orchestration (for example, a scheduler or Airflow DAG) once the manual run is not enough.
 
-![Sales analysis from PostgreSQL](portfolio/sql_analytics.png)
+## Data Source
 
-`sql/analytics_queries.sql` contains nine queries. The three views in `sql/views.sql` summarize monthly sales, customer orders, and product sales. Customer rankings and repeat-customer counts use the unique customer identifier rather than counting each order-specific customer ID as a different person.
-
-In this extract, health and beauty has the highest delivered-item revenue at BRL 1,233,131.72. The monthly chart represents this historical sample, not the full market; missing months are not filled with zeros, and partial months should not be interpreted as complete trading periods.
-
-## Tests
-
-The tests use synthetic source rows, so the Kaggle download is not needed:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-This runs 16 extraction, transformation, and validation tests. Four PostgreSQL integration tests are skipped unless `TEST_DATABASE_URL` is set. To include them, use the connection settings exported above and a separate test database:
-
-```bash
-createdb ecommerce_pipeline_test
-TEST_DATABASE_URL='dbname=ecommerce_pipeline_test' \
-  python -m unittest discover -s tests -v
-```
-
-Each integration test creates a uniquely named schema and removes it afterward. They check first and repeated loads, new keys, unchanged existing values, empty facts, SQL views/queries, and rollback after a payment constraint failure. The test role needs permission to create schemas.
-
-## Files worth reading
-
-```text
-src/extract.py          CSV loading and required-column checks
-src/transform.py        Cleaning rules and per-source row counts
-src/validate.py         Key, reference, and numeric checks
-src/load.py             Transactional dimension and fact inserts
-src/pipeline.py         Pipeline entry point and logging
-src/make_images.py      Database-backed charts and model diagrams
-sql/create_tables.sql  Five tables, constraints, and indexes
-sql/views.sql          Three analytical views
-sql/analytics_queries.sql
-tests/                 Synthetic cases and PostgreSQL integration tests
-docs/run_results.md    Measured results and verification environment
-data/raw/              Downloaded CSVs (ignored)
-logs/                  Pipeline logs (ignored)
-```
-
-## Technical lessons and next steps
-
-The main modeling lesson is that item and payment facts need different grains. Business keys prevent duplicate inserts, but they do not handle source corrections. Separating rejected data from excluded order statuses also makes the quality counts easier to interpret.
-
-Next improvements would be a defined update policy for corrected source records, a rejected-row file with reasons, and source-to-warehouse reconciliation for delivered orders missing items or payments. The current implementation loads data into memory and runs manually; it has no scheduler, streaming ingestion, or schema migration system.
+[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Anonymized orders from 2016–2018. Raw files are downloaded separately and ignored by Git.
 
 ## Author
 
