@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 import psycopg
-
+from psycopg import sql
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
@@ -21,7 +21,8 @@ def connect():
 
 
 def count_rows(cursor, table):
-    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+    """Count rows in a table using properly quoted identifier."""
+    cursor.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table)))
     return cursor.fetchone()[0]
 
 

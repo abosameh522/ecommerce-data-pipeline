@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pandas as pd
 
-
 FILES = {
     "customers": "olist_customers_dataset.csv",
     "products": "olist_products_dataset.csv",

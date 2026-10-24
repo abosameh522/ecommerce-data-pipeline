@@ -1,13 +1,15 @@
 import logging
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from extract import extract
 from load import load
 from transform import transform
 from validate import validate
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_DIR / ".env", override=False)
 
 
 def main():

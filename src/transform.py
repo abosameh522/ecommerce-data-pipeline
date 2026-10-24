@@ -50,7 +50,8 @@ def transform(raw):
     good = valid_id(products["product_id"])
     report["products"]["rejected"] = int((~good).sum())
     products = products.loc[good, ["product_id", "product_category_name"]].copy()
-    products["category"] = products["product_category_name"].map(category_names).fillna("Unknown")
+    # Convert to object dtype before fillna to avoid pandas dtype incompatibility warning
+    products["category"] = products["product_category_name"].map(category_names).astype(object).fillna("Unknown")
     products = products[["product_id", "category"]]
 
     orders = tables["orders"]

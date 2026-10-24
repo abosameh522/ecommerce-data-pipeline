@@ -8,7 +8,6 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 from load import connect
 
-
 ROOT = Path(__file__).resolve().parents[1]
 NAVY = "#14233b"
 BLUE = "#2a6fdb"

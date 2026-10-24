@@ -1,10 +1,8 @@
 # E-commerce Data Pipeline
 
-A batch ETL pipeline that converts six raw Olist CSV files into a validated PostgreSQL star schema and answers sales questions with SQL.
+A batch ETL pipeline that extracts, transforms, validates, and loads Olist e-commerce data into a PostgreSQL star schema, with SQL views and analytical queries.
 
-`Python` · `pandas` · `PostgreSQL` · `psycopg 3` · `SQL` · `unittest`
-
----
+Built with Python, pandas, PostgreSQL (psycopg 3), SQL, and unittest.
 
 ## Overview
 
@@ -142,7 +140,11 @@ ecommerce-data-pipeline/
 ├── images/                   # Architecture diagram
 ├── portfolio/                # Project visuals
 ├── logs/                     # Run logs (ignored)
+├── .env.example              # Environment variable template
 ├── requirements.txt
+├── pyproject.toml            # Ruff and pytest configuration
+├── .pre-commit-config.yaml   # Pre-commit hooks
+├── LICENSE
 └── README.md
 ```
 
@@ -173,16 +175,34 @@ The archive includes three files the pipeline does not read; they can stay in `d
 
 **3. Configure the connection**
 
-The pipeline reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and optional `DB_PASSWORD`. It does not load `.env` on its own, so export the values into the shell.
+The Python pipeline automatically loads environment variables from `.env`. Shell commands like `createdb` and `psql` require explicit export.
 
 ```bash
 cp .env.example .env
-# Edit .env with your PostgreSQL settings, then:
-set -a; source .env; set +a
+# Edit .env with your PostgreSQL credentials
+```
 
-# The psql/createdb tools use PG* variables, not DB*.
-export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$DB_USER"
-export PGPASSWORD="${DB_PASSWORD:-}"
+**Option A: Use Docker Compose (recommended for local development)**
+
+```bash
+docker compose up -d
+docker compose ps  # Wait until status shows "healthy"
+```
+
+This starts PostgreSQL on `127.0.0.1:5432` using credentials from `.env`. Data persists in a Docker volume across restarts.
+
+**Option B: Use an existing PostgreSQL server**
+
+Edit `.env` with your PostgreSQL connection details, then create the database:
+
+```bash
+# Load variables from .env and export them
+set -a
+source .env
+set +a
+
+# Convert DB_* variables to PG* format for createdb/psql
+export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$DB_USER" PGPASSWORD="$DB_PASSWORD"
 createdb "$DB_NAME"
 ```
 
@@ -229,15 +249,14 @@ The monthly chart covers this historical sample only. Months without delivered o
 - Risk of double counting is documented but not prevented: joining both facts on `order_id` before aggregation inflates results.
 - Insert counts come from before/after table counts and assume a single writer.
 - The pipeline holds the data in memory and runs on demand; there is no scheduler or incremental watermark.
-- No code license is currently included in the repository.
 
 ## Future Improvements
 
-- Add an explicit upsert path with an update timestamp so corrected source rows propagate.
-- Emit a rejected-rows report with a reason per record.
-- Reconcile source and warehouse for delivered orders missing items or payments.
-- Build a continuous date dimension for gap-free monthly reporting.
-- Add orchestration once recurring runs are needed.
+- Add an explicit upsert path with an update timestamp so corrected source rows propagate to the warehouse.
+- Emit a rejected-rows report with a reason per record, making data quality issues easier to diagnose.
+- Reconcile source and warehouse row counts to catch delivered orders that are missing items or payments.
+- Build a continuous date dimension covering the full date range for gap-free monthly trend reporting.
+- Add orchestration (Airflow, Prefect, or Dagster) once recurring runs are needed, with incremental loading based on a high-water mark.
 
 ## Data Source
 

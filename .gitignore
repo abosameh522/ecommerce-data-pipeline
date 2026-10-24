@@ -12,3 +12,6 @@ data/raw/*
 !data/raw/.gitkeep
 logs/*
 !logs/.gitkeep
+.coverage
+.pytest_cache/
+*.pyc
