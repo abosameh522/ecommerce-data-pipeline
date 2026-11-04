@@ -47,3 +47,17 @@ CREATE TABLE IF NOT EXISTS fact_payments (
     payment_amount NUMERIC(14, 2) NOT NULL CHECK (payment_amount >= 0),
     PRIMARY KEY (order_id, payment_sequential)
 );
+
+CREATE TABLE IF NOT EXISTS quality_checks (
+    check_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    check_name TEXT NOT NULL,
+    check_status TEXT NOT NULL CHECK (check_status IN ('pass', 'fail', 'warn')),
+    records_checked INTEGER NOT NULL CHECK (records_checked >= 0),
+    records_failed INTEGER NOT NULL CHECK (records_failed >= 0),
+    error_message TEXT,
+    check_metadata JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_checks_timestamp ON quality_checks (run_timestamp);
+CREATE INDEX IF NOT EXISTS idx_quality_checks_name ON quality_checks (check_name);

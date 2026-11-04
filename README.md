@@ -5,7 +5,7 @@ A batch ETL pipeline that extracts Olist Brazilian e-commerce CSVs, validates an
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![PostgreSQL](https://img.shields.io/badge/postgresql-16%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-24%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-28%20passed-brightgreen)
 ![Lint](https://img.shields.io/badge/lint-ruff-success)
 
 ## Why This Exists
@@ -18,7 +18,8 @@ Most portfolio projects stop at a Jupyter notebook. Hiring managers for Junior D
 - **Transforms** with per-source quality counts (duplicates, rejected, excluded, cleaned)
 - **Validates** keys, references, ranges, and item-total arithmetic before any DB write
 - **Loads** a star schema (`dim_customers`, `dim_products`, `dim_date`, `fact_orders`, `fact_payments`) in one transaction using `INSERT ... ON CONFLICT DO NOTHING` for idempotency
-- **Exposes** 3 analytical views + 9 queries for sales reporting
+- **Logs quality checks** to database table for validation trend analysis (optional, doesn't block pipeline)
+- **Exposes** 3 analytical views + 15 SQL queries (9 basic aggregations + 6 intermediate queries with window functions, CTEs, self-joins)
 - **Generates** portfolio diagrams from the loaded warehouse
 
 ```mermaid
@@ -52,6 +53,7 @@ flowchart LR
 | Language | Python 3.11+ | Standard for DE/ML, rich data ecosystem |
 | Dataframes | pandas | In-memory transforms, CSV handling |
 | Database | PostgreSQL 16+ via psycopg 3 | Production-grade, native `ON CONFLICT`, arrays, JSON |
+| Quality Monitoring | Custom quality_checks table | Tracks validation trends over time, no external dependencies |
 | Orchestration | None (manual batch) | Keeps focus on pipeline mechanics; Airflow/Dagster noted in roadmap |
 | Testing | unittest + pytest | Zero extra deps for core tests; pytest for CI |
 | Lint/Format | Ruff | Fast, replaces flake8+isort+black |
@@ -66,16 +68,19 @@ ecommerce-data-pipeline/
 │   ├── extract.py            # CSV loading & column contracts
 │   ├── transform.py          # Cleaning, normalization, quality counts
 │   ├── validate.py           # Key/ref/range checks + reconciliation
+│   ├── quality_monitor.py    # Optional quality checks logger (writes to quality_checks table)
 │   ├── load.py               # Transactional idempotent inserts
 │   ├── pipeline.py           # Entrypoint, logging, .env loading
 │   └── make_images.py        # DB-backed portfolio charts
 ├── sql/
-│   ├── create_tables.sql     # Tables, PK/FK, indexes, checks
+│   ├── create_tables.sql     # Tables (dims, facts, quality_checks), PK/FK, indexes, checks
 │   ├── views.sql             # monthly_sales_summary, customer_order_summary, product_sales_summary
-│   └── analytics_queries.sql # 9 business queries
+│   ├── analytics_queries.sql # 9 basic business queries
+│   └── intermediate_analytics.sql # 6 intermediate SQL queries (window functions, CTEs, self-joins)
 ├── tests/
 │   ├── sample_data.py        # Synthetic rows for unit tests
-│   ├── test_pipeline.py      # Extract/transform/validate (16 tests)
+│   ├── test_pipeline.py      # Extract/transform/validate (20 tests)
+│   ├── test_load_unit.py     # Load module unit tests (8 tests)
 │   └── test_load.py          # PG integration (4 tests, needs TEST_DATABASE_URL)
 ├── docs/
 │   └── run_results.md        # Verified full-run numbers and SQL outputs
@@ -99,63 +104,66 @@ ecommerce-data-pipeline/
 # 1. Clone & venv
 git clone https://github.com/abosameh522/ecommerce-data-pipeline.git
 cd ecommerce-data-pipeline
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Data (manual download from Kaggle)
-curl -fL --retry 2 "https://www.kaggle.com/api/v1/datasets/download/olistbr/brazilian-ecommerce" -o olist.zip
-unzip -j olist.zip -d data/raw
+# 3. Download dataset (requires Kaggle API)
+mkdir -p data/raw
+kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
 
-# 3. Configure
+# 4. Configure database
 cp .env.example .env
-# Edit .env with your PostgreSQL credentials
-
-# 4. Database (Option A: Docker Compose - recommended)
-docker compose up -d
-# wait for healthy status
-
-#    (Option B: Existing PG)
-set -a; source .env; set +a
-export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$DB_USER" PGPASSWORD="$DB_PASSWORD"
+# Edit .env with your PostgreSQL connection: DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+export DB_NAME="ecommerce_dw"
 createdb "$DB_NAME"
 
 # 5. Run pipeline
 python src/pipeline.py
 
-# 6. Query
+# 6. Query (basic analytics)
 psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" -f sql/analytics_queries.sql
 
-# 7. Idempotency check (should insert 0 rows)
+# 7. Query (intermediate SQL - window functions, CTEs, self-joins)
+psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" -f sql/intermediate_analytics.sql
+
+# 8. Idempotency check (should insert 0 rows)
 python src/pipeline.py
 
-# 8. Regenerate portfolio images
+# 9. Inspect quality check logs (if database was available during validation)
+psql -d "$DB_NAME" -c "SELECT check_name, check_status, records_checked, records_failed FROM quality_checks ORDER BY run_timestamp DESC LIMIT 10;"
+
+# 10. Regenerate portfolio images
 python src/make_images.py
 ```
 
-**UNVERIFIED:** The `curl` download requires a Kaggle account; if it fails, download manually from the Kaggle UI and unzip to `data/raw/`. The Docker Compose path was tested on Linux; macOS/Windows may need `host.docker.internal` adjustments.
+## Test
 
-## Results
+```bash
+# Unit tests (no database required)
+python -m unittest discover -s tests -v
 
-| Metric | Value | Source |
-|--------|-------|--------|
-| Delivered orders loaded | 96,478 | `docs/run_results.md:26` |
-| Order items (fact_orders) | 110,197 | `docs/run_results.md:40` |
-| Payment records (fact_payments) | 100,756 | `docs/run_results.md:41` |
-| Item revenue (BRL) | 13,221,498.11 | `docs/run_results.md:54` |
-| Avg item value per order (BRL) | 137.04 | `docs/run_results.md:55` |
-| Top category | health_beauty | `docs/run_results.md:56` |
-| Top category revenue (BRL) | 1,233,131.72 | `docs/run_results.md:57` |
-| Pipeline runtime (full dataset) | TODO(ahmed) | run locally and record |
-| Database size on disk | TODO(ahmed) | run locally and record |
+# Integration tests (requires TEST_DATABASE_URL)
+export TEST_DATABASE_URL="postgresql://user:pass@localhost/test_db"
+createdb test_db
+python -m unittest discover -s tests -p "test_load.py" -v
 
-> Verified on Linux, Python 3.14.7, PostgreSQL 18.6. See `docs/run_results.md` for full reconciliation tables and SQL query outputs.
+# Linting
+python -m ruff check src tests
 
-![SQL Analytics](portfolio/sql_analytics.png)
+# Pre-commit hooks
+pre-commit install
+pre-commit run --all-files
+```
 
-## Learned
+## What You Learn
 
 - **Idempotent warehouse loads** are non-negotiable: `ON CONFLICT DO NOTHING` on natural keys + surrogate PKs makes reruns safe and auditable.
 - **Validation before load** catches garbage early and keeps DB errors out of the critical path — distinguish *rejected* (bad data) from *excluded* (out of scope).
+- **Quality monitoring as data** turns validation from pass/fail to a time-series that reveals data drift, source degradation, and anomaly trends.
+- **Intermediate SQL** (window functions, CTEs, self-joins) differentiates junior-level data engineering from basic analytics: customer segmentation, cohort analysis, time-series comparisons, and graph-like queries.
 - **Separate fact grains** prevent double-counting: items and payments at different grains must be aggregated to order grain before joining on money.
 - **Reconciled counts** (`input = dup + rej + exc + clean`) survive partial failures and make data quality visible.
 - **Integer date keys** (`YYYYMMDD`) simplify partitioning and range scans vs. `DATE` foreign keys.
@@ -163,11 +171,12 @@ python src/make_images.py
 ## Limitations
 
 - **Insert-only**: no upsert for corrected source rows; repeat load skips known keys.
-- **No incremental watermark**: full scan every run; `max(date_key)` logic is a TODO.
+- **Full-load only**: no incremental extraction; every run processes all CSVs.
 - **Sparse date dimension**: only observed dates exist, so monthly trends have gaps.
 - **No orchestration**: manual run; Airflow/Dagster DAGs are roadmap items.
 - **Single-writer insert counts**: before/after table counts assume no concurrent loads.
 - **In-memory pandas**: not suited for >100M rows without chunking or Polars/DuckDB.
+- **Quality monitoring requires database**: if database is unavailable during validation, quality checks are not logged (but validation still works).
 
 ## Roadmap
 
@@ -175,19 +184,26 @@ python src/make_images.py
 - [ ] Upsert path with `updated_at` so corrected rows propagate
 - [ ] Rejected-rows report (CSV/Parquet) with per-record reason codes
 - [ ] Continuous date dimension for gap-free trend reporting
-- [ ] Airflow/Dagster DAG with task groups, retries, SLAs
-- [ ] Great Expectations checkpoints in `validate.py`
-- [ ] dbt project for SQL layer (models, tests, contracts, lineage)
-- [ ] CI: Testcontainers for Postgres integration tests on every PR
+- [ ] Airflow DAG with task dependencies, retries, and data freshness sensors
+- [ ] dbt models to replace raw SQL views (snapshots, tests, documentation)
+- [ ] duckdb/Polars path for 100M+ row datasets
+
+## Why This Structure
+
+This isn't production code — it's a **teaching artifact** for portfolio and interviews. The goal is to show:
+
+1. **Engineering basics**: error handling, logging, transactions, idempotency
+2. **Data thinking**: grain, cardinality, reconciliation, exclusion vs rejection
+3. **SQL fluency**: star schemas, window functions, CTEs, analytical queries
+4. **Process clarity**: each stage is a pure function with clear inputs/outputs
+5. **Testability**: unit tests for logic, integration tests for database behavior
+
+Junior DE roles don't expect distributed systems or real-time streaming. They expect **working batch pipelines** that handle bad data gracefully and produce correct star schemas. This project delivers exactly that.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — free to use, modify, and share. Dataset is CC BY-NC-SA 4.0 (Olist/Kaggle).
 
-## Contact
+## Feedback
 
-Ahmed Sameh — Data Engineer & Analyst  
-GitHub: [@abosameh522](https://github.com/abosameh522)  
-Open to Junior Data Engineer / Analytics Engineer roles (remote, Egypt-based).  
-Availability: now (part-time) / full-time after graduation 2027.  
-No visa sponsorship needed for remote roles.
+Issues and suggestions welcome. This is a living portfolio project — if you see a better pattern or missed edge case, please open an issue.
